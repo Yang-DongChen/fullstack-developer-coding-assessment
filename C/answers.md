@@ -2,461 +2,276 @@
 
 ## Assumptions
 
-- I assume the integration uses Xero's Accounting API v2 and standard OAuth 2.0 user-authorisation flow.
-- I assume each connected organisation has its own stored Xero tenant ID and sync cursor.
-- For new Xero apps created from 2 March 2026, I assume granular scopes are used, such as `accounting.invoices`. Older apps may still use the broader `accounting.transactions` scope during the migration period.
-- The design is SDK-independent. An official Xero SDK can be used, but the checks and failure handling should remain the same.
+- I use the current Xero OAuth 2.0 flow and Xero Accounting API 2.0 REST API.
+- I use raw HTTPS requests rather than a language SDK, so the design is independent of a specific SDK version.
+- For new applications, I assume the granular invoice scope `accounting.invoices`. Older applications may still use the broader `accounting.transactions` scope during Xero's migration period.
+- Each connected organisation stores its own `tenant_id`, token data, and sync cursor.
 
 ## C1 - Connection verification
 
-Before reading invoices, I would make the smallest verification sequence:
+I would use the smallest sequence below and stop before reading invoices if a check fails.
 
-1. Make sure there is a valid access token.
-   - Check that the token exists and has not expired.
-   - Xero access tokens are valid for up to 30 minutes. If needed, refresh the token before continuing.
+1. **Get a valid access token.**
+   - If the stored access token is still valid, use it.
+   - If it is expired, refresh it first.
+   - Confirm the token has the permission needed to access invoices.
 
-2. Call the Xero `GET /connections` endpoint using the access token.
-   - `200 OK` proves that OAuth authentication is working and the token can access the Xero connections endpoint.
-   - The response contains the connected tenant ID(s).
+2. **Call `GET https://api.xero.com/connections`.**
+   - Send `Authorization: Bearer <access_token>`.
+   - Find the connected organisation whose `id` equals the stored `tenant_id`.
+   - This proves that the OAuth connection is usable and that the expected tenant is still connected.
 
-3. Compare the returned tenant ID with the tenant ID stored for this internal organisation.
-   - Match = the application selected the expected Xero organisation.
-   - No match = stop the sync and treat it as a tenant-selection/configuration problem.
-
-4. Check that the OAuth token contains the scope required to read invoices.
-   - For current granular scopes, the invoice permission is `accounting.invoices`.
-
-5. Only then call `GET /Invoices` with:
-   - `Authorization: Bearer <access_token>`
-   - `xero-tenant-id: <tenant_id>` for the normal user-authorisation flow.
-
-This gives a simple separation:
+3. **Only then call the invoices endpoint.**
+   - For the normal user-authorisation flow, send `Authorization` and `xero-tenant-id`.
+   - Call `GET /api.xro/2.0/Invoices?page=1`.
+   - A `200` proves that authentication, tenant selection, endpoint configuration and invoice access work together.
 
 ```text
-Token valid?
+stored connection
     |
-    v
-GET /connections
+    +-- access token valid? -- no --> refresh token --> save new tokens
+    |                                  |
+    |                                  +-- refresh fails --> re-authorise
     |
-    v
-Expected tenant ID?
+    +-- check required invoice scope
     |
-    v
-Invoice scope available?
+    +-- GET /connections
+    |       |
+    |       +-- stored tenant_id found? -- no --> connection/config error
     |
-    v
-GET /Invoices
+    +-- GET /api.xro/2.0/Invoices?page=1
 ```
-
-If any check fails, I would stop before reading invoices and record the reason for diagnosis.
 
 ## C2 - Failure diagnosis
 
-I would use the following decision tree:
-
 ```text
-GET /connections succeeds
+GET /connections = 200
         |
-        v
-GET /Invoices fails
-        |
-   +----+----+
-   |         |
-  401       403
-   |         |
-   v         v
-Token     Scope / permission
-problem    problem
-   |
-refresh/re-auth
+        +--> GET /Invoices
+                |
+                +-- 401 Unauthorized
+                |     1. Check access-token expiry/validity.
+                |     2. Refresh the access token once.
+                |     3. Inspect `WWW-Authenticate` when present.
+                |     4. If it indicates `insufficient_scope`, check `accounting.invoices`.
+                |     5. If the problem remains, mark the connection for re-authorisation.
+                |
+                +-- 403 Forbidden
+                |     1. Check the Xero user's permission to access the organisation/data.
+                |     2. Compare user permissions between working and failing environments.
+                |     3. Do not keep retrying a persistent permission failure.
+                |
+                +-- 404 Not Found
+                      1. Check endpoint URL and API version.
+                      2. Check `xero-tenant-id` against the current `/connections` result.
+                      3. Check that the organisation is still connected.
+                      4. Compare environment variables/configuration.
+                      5. Do not blindly retry; fix the resource or configuration first.
 ```
 
-### 401 Unauthorized
+For environment differences, I would compare the **client ID, client secret, redirect URI, requested scopes, stored tenant ID, API base URL, and connection data**. I would also verify that the test environment is connected to the intended Xero demo/test organisation.
 
-Check in this order:
-
-1. Is the access token expired?
-2. Was the refreshed token actually saved?
-3. Is the `Authorization: Bearer ...` header correct?
-4. Is the token from the expected Xero app/environment?
-
-Action:
-
-- Refresh the token and retry once.
-- If refresh fails, mark the connection as requiring re-authentication instead of retrying forever.
-
-### 403 Forbidden
-
-Check:
-
-1. Does the token contain the required invoice scope?
-2. Was the application authorised with the new granular scope?
-3. Does the Xero user have permission to access the required organisation/data?
-4. Was the scope changed after the original authorisation?
-
-Action:
-
-- Do not repeatedly retry.
-- Ask for the required permission/re-authorisation if necessary. Xero recommends requesting the minimum scopes required.
-
-### 404 Not Found
-
-Check:
-
-1. Is the Xero tenant ID correct?
-2. Was the tenant disconnected and later reconnected?
-3. Is the worker using the correct environment/configuration?
-4. Is the API endpoint/base URL correct?
-5. Is the resource actually present?
-
-Action:
-
-- Stop the job, log the configuration problem, and verify the connection rather than blindly retrying.
-
-### Environment checks
-
-For each environment I would verify:
-
-```text
-XERO_CLIENT_ID
-XERO_CLIENT_SECRET
-XERO_API_BASE_URL
-XERO_AUTH_URL
-stored tenant_id
-stored token set
-requested scopes
-```
-
-The important rule is that credentials and tenant configuration must not be mixed between development, staging, and production.
+Current Xero documentation distinguishes invalid authorisation (`401`), permission failures (`403`) and missing resources (`404`). Xero's current granular-scope guidance also says an endpoint called without the required granular scope can return `401` with `WWW-Authenticate: insufficient_scope`; therefore, scope diagnosis should not be limited to `403`.
 
 ## C3 - Incremental synchronisation
 
-For a large organisation, I would use paginated incremental sync rather than downloading all invoices every time.
+For a large organisation I would make the sync resumable and idempotent.
 
-### Basic flow
+### Initial sync
 
-```text
-Read saved sync cursor
-        |
-        v
-Request invoices modified since cursor
-        |
-        v
-Process one page
-        |
-        v
-Upsert invoices by Xero InvoiceID
-        |
-        v
-Save progress
-        |
-        v
-Request next page
-        |
-        v
-Repeat until finished
+1. Start a sync job and save a sync record for `(tenant_id, job_id)`.
+2. Request invoices page by page.
+3. Process each page and upsert invoices using `(tenant_id, invoice_id)` as the unique key.
+4. Save the current page/checkpoint only **after that page is committed successfully**.
+5. Continue until there are no more pages.
+
+### Incremental sync
+
+Use Xero's `If-Modified-Since` header so only invoices changed since the previous watermark need to be fetched.
+
+Example:
+
+```http
+GET https://api.xero.com/api.xro/2.0/Invoices?page=1
+Authorization: Bearer <access_token>
+xero-tenant-id: <tenant_id>
+If-Modified-Since: 2026-09-25T00:00:00Z
+Accept: application/json
 ```
 
-Xero supports pagination for invoices and recommends using `If-Modified-Since` to retrieve only records changed since a given time. Pagination can retrieve invoices in batches of 100.
+I would keep a small overlap in the watermark, for example re-reading from a few seconds before the last successful watermark. This can produce duplicates, so the database must make replay safe with a unique `(tenant_id, invoice_id)` key.
 
-### Cursor
-
-For each tenant I would store something like:
+A safe rule is:
 
 ```text
-tenant_id
-last_successful_sync_at
-page/checkpoint
-sync_status
+job_start = now
+read changes since (last_watermark - small_overlap)
+process all pages
+only after the whole job succeeds:
+    last_watermark = job_start
 ```
 
-I would only move the main sync cursor forward after the corresponding page has been processed successfully.
+This avoids moving the watermark past records that changed while the job was running.
 
-### Duplicates
+### Partial failure and replay
 
-Use the Xero `InvoiceID` as a unique key in the internal database.
-
-```text
-if InvoiceID exists:
-    update existing invoice
-else:
-    insert invoice
-```
-
-This makes the operation safe to replay.
-
-### Change window
-
-To reduce the risk of missing records near the cursor boundary, I would use a small overlap:
-
-```text
-next_start = last_successful_sync_at - overlap
-```
-
-For example, the next run can re-read a few minutes of data. Duplicate records are safe because the database uses an upsert/unique key.
-
-### Partial failure
-
-If page 5 succeeds and page 6 fails:
-
-```text
-Pages 1-5 = committed
-Page 6 = failed
-```
-
-The worker should keep the last successful checkpoint and retry page 6 later. It should not mark the entire sync as successful.
-
-### Safe replay
-
-A replay should be harmless:
-
-```text
-same InvoiceID
-      |
-      v
-upsert
-      |
-      v
-one internal record
-```
-
-This allows worker crashes, retries, and overlapping change windows without creating duplicate internal invoices.
+- If page 7 fails, keep the cursor at the last successfully committed checkpoint and retry from there.
+- If the worker dies, restart from the saved cursor.
+- Reprocessing a successful page is acceptable because upsert + unique keys prevent duplicates.
+- Save cursor and processed data in one database transaction when possible.
+- Never advance the cursor before the corresponding data is durably saved.
 
 ## C4 - Rate limits
 
-If the worker receives `HTTP 429`, I would treat it as a temporary rate-limit response.
+When Xero returns `429 Too Many Requests`:
 
-Xero provides rate-limit information in response headers, including remaining minute/day/app limits, and a 429 response includes `Retry-After` indicating how many seconds to wait.
-
-### Handling
-
-1. Read `Retry-After` if present.
-2. Wait at least that long.
-3. Add small random jitter.
-4. Retry with exponential backoff if additional retries are allowed.
-5. Limit worker concurrency so many jobs do not retry simultaneously.
-6. Keep a retry budget, for example 3-5 attempts.
-7. If the budget is exhausted, reschedule the job for later instead of continuously retrying.
+1. Read `Retry-After` and wait at least that many seconds.
+2. Read the rate-limit headers to understand whether the minute/day/app limit is being reached.
+3. Add exponential backoff plus random jitter for repeated retries.
+4. Limit worker concurrency per tenant.
+5. Use a small retry budget, for example 3 retries for one job, then reschedule the job instead of retrying forever.
 
 Example:
 
-```text
-429
- |
- +--> Retry-After = 5s
- |
- wait 5s + jitter
- |
- retry
- |
- +--> 429 again
-       |
-       wait longer
-       |
-       retry until retry budget is reached
+```python
+for attempt in range(3):
+    response = call_xero()
+
+    if response.status_code == 200:
+        return response
+
+    if response.status_code == 429:
+        wait_seconds = int(response.headers.get("Retry-After", "5"))
+        wait_seconds += random_jitter()
+        sleep(wait_seconds)
+        continue
+
+    if response.status_code == 401:
+        refresh_token_once()
+        continue
+
+    if response.status_code in (500, 503):
+        sleep(exponential_backoff(attempt) + random_jitter())
+        continue
+
+    if response.status_code in (400, 403, 404):
+        raise PermanentError()
+
+    raise UnexpectedError()
 ```
 
-For large data sets, pagination and `If-Modified-Since` should also be used to reduce unnecessary API calls. Xero recommends queuing/scheduling background work for large retrieval jobs.
-
-### Errors not blindly retried
-
-I would not automatically retry these as normal transient failures:
-
-```text
-400 Bad Request
-401 Unauthorized
-403 Forbidden
-404 Not Found
-```
-
-These normally require correcting the request, token, permission, tenant, or resource configuration first.
-
-Transient network failures and appropriate `5xx` responses can be retried with the same idempotency strategy where applicable.
+I would not automatically retry validation/configuration errors such as `400`, permission errors such as `403`, or missing resources such as `404`. A `401` gets one token-refresh/re-authorisation path, not an unlimited retry loop. Transient `5xx/503` errors can use the same bounded retry mechanism.
 
 ## C5 - Data integrity
 
-The main problem is:
+The main risk is:
 
 ```text
-POST create invoice
-      |
-      v
-Xero creates invoice successfully
-      |
-      v
-response is lost / timeout
-      |
-      v
-worker thinks it failed
-      |
-      v
-worker retries
+Create invoice -> Xero succeeds -> network times out -> worker thinks it failed -> retries
 ```
 
-Without protection, this may create a duplicate invoice.
+I would use **idempotency + local mapping + reconciliation**.
 
-### Idempotency
+### Before creating the invoice
 
-For mutating requests, I would send a stable `Idempotency-Key` for the same logical operation.
-
-Example:
+Create a local record like:
 
 ```text
-Idempotency-Key: order-12345-create-invoice
+order_id -> tenant_id -> status=PENDING -> idempotency_key
 ```
 
-When the same request must be retried because of a timeout, I would reuse the same key rather than creating a new one. Xero uses the idempotency key to avoid processing the same mutation again and can return the cached original response.
+Put the same stable idempotency key on the Xero create request:
 
-### Internal database protection
+```http
+Idempotency-Key: <stable-key-for-this-create-operation>
+```
 
-I would also keep a record such as:
+If the request times out, retry with the **same key** while the key is still valid.
+
+### After a successful response
+
+Save the returned `InvoiceID` in the local database:
 
 ```text
-order_id
-xero_invoice_id
-status
-idempotency_key
+(order_id, tenant_id) UNIQUE
+(order_id, tenant_id) -> xero_invoice_id
 ```
 
-and enforce a unique constraint on the business operation, for example:
+### If the response is lost
 
-```text
-UNIQUE(order_id)
-```
+1. Retry with the same idempotency key if it is still valid.
+2. If the key has expired, first reconcile by querying Xero using a deterministic business identifier controlled by the integration, such as a unique invoice number.
+3. If the invoice exists, store its Xero `InvoiceID` instead of creating another invoice.
+4. Only create a new invoice when reconciliation confirms that no matching invoice exists.
 
-or an equivalent unique sync key.
-
-### Lost response reconciliation
-
-If a create request times out:
-
-1. Retry with the same idempotency key when appropriate.
-2. If the idempotency result cannot be confirmed, query Xero to check whether the invoice already exists.
-3. If the invoice exists, save its Xero ID and mark the order as synced.
-4. Only create a new invoice when there is evidence that the previous create did not succeed and the idempotency key can safely be replaced.
-
-Xero specifically recommends inspecting the resource with a GET request when repeated idempotent requests continue to fail, before attempting a new creation.
+This makes normal worker retries safe and prevents a timeout from creating duplicate invoices.
 
 ## C6 - Observability and security
 
 ### Logs
 
-For every sync job I would log:
+Log:
 
-```text
-request_id
-job_id
-tenant_id
-internal_order_id
-xero_invoice_id
-operation
-HTTP status
-duration_ms
-retry_count
-sync result
-error category
-```
+- `job_id`
+- `tenant_id` (or a safe hashed form if needed)
+- internal `order_id`
+- Xero `InvoiceID` when known
+- Xero correlation ID when returned
+- HTTP method and endpoint name
+- status code
+- latency
+- retry count
+- sync page/cursor
+- error category
 
-Example:
+Never log:
 
-```text
-request_id=abc123
-job_id=job456
-tenant_id=tenant789
-operation=invoice_sync
-status=success
-duration_ms=420
-```
-
-### Correlation IDs
-
-I would use:
-
-- `request_id` for tracing one API/request flow
-- `job_id` for one background worker job
-- `tenant_id` to identify the connected organisation
-- `order_id` / `invoice_id` to connect business records
-
-These IDs make it possible to trace:
-
-```text
-internal order
-    -> worker job
-    -> Xero API call
-    -> Xero invoice
-```
+- access tokens
+- refresh tokens
+- client secrets
+- `Authorization` headers
+- full request/response bodies containing customer or financial data
 
 ### Metrics
 
-Useful metrics include:
+I would track:
 
 ```text
-invoice_sync_success_total
-invoice_sync_failure_total
-invoice_sync_duration_seconds
-xero_api_requests_total
+xero_requests_total{endpoint,status}
+xero_request_latency_seconds
 xero_429_total
 xero_401_total
 xero_403_total
 xero_5xx_total
-sync_retry_total
+xero_token_refresh_failures_total
+xero_sync_records_total
+xero_sync_failures_total
+xero_sync_lag_seconds
+xero_duplicate_prevented_total
 ```
-
-I would also monitor queue depth and the age of the oldest pending sync job.
 
 ### Alerts
 
-Examples:
+Alert on sustained 429s, repeated 401/token-refresh failures, repeated 5xx errors, growing sync lag, and jobs stuck at the same cursor for too long.
 
-- invoice sync failure rate becomes high
-- repeated 401 responses
-- repeated 403 responses
-- sudden increase in 429 responses
-- worker queue is growing for too long
-- sync jobs are stuck or delayed
+### Secrets and rotation
 
-### What must never be logged
+Store client secrets and tokens in a dedicated secret store or encrypted database, not in source code or normal logs. Use least-privilege access and separate credentials by environment.
 
-Never log:
+Xero access tokens expire after 30 minutes. Refresh tokens, when using the standard OAuth flow, should be securely replaced with the newly returned refresh token after a successful refresh. A connection that can no longer be refreshed should be sent through authorisation again.
 
-```text
-access_token
-refresh_token
-client_secret
-passwords
-Authorization header
-full request bodies containing sensitive financial/customer data
-```
+## Official Xero references
 
-Tokens and secrets should be masked or completely excluded from logs.
+- OAuth 2.0 token types: https://developer.xero.com/documentation/guides/oauth2/token-types/
+- OAuth 2.0 scopes: https://developer.xero.com/documentation/guides/oauth2/scopes/
+- OAuth 2.0 / PKCE flow: https://developer.xero.com/documentation/guides/oauth2/pkce-flow/
+- Accounting API - Invoices: https://developer.xero.com/documentation/api/accounting/invoices
+- Accounting API - response codes: https://developer.xero.com/documentation/api/accounting/responsecodes
+- Idempotent requests: https://developer.xero.com/documentation/guides/idempotent-requests/idempotency/
+- Rate limits: https://developer.xero.com/documentation/best-practices/api-call-efficiencies/rate-limits/
+- Granular scopes FAQ: https://developer.xero.com/faq/granular-scopes
+- Developer changelog: https://developer.xero.com/changelog
 
-### Secret storage
+## SDK / API version assumption
 
-Secrets should not be hard-coded in source code or committed to Git.
-
-I would store them in:
-
-```text
-environment variables
-or
-a secret manager
-```
-
-For stored Xero tokens, use encrypted storage with restricted access.
-
-### Rotation
-
-Rotate application secrets regularly and replace compromised credentials immediately.
-
-For OAuth tokens, refresh them according to Xero's OAuth flow and securely save the newly issued token data. Access tokens expire after 30 minutes; refresh tokens, when used in the standard OAuth flow, are also subject to Xero's token lifecycle.
-
-## Official Xero documentation referenced
-
-- Xero OAuth 2.0 / PKCE flow
-- Xero Token Types
-- Xero Rate Limits
-- Xero Limits FAQ
-- Xero Idempotent Requests
-- Xero OAuth 2.0 Scopes / Granular Scopes
-
-The implementation should be checked against the current Xero documentation before production deployment because Xero is migrating Accounting API permissions from broad scopes to granular scopes.
+This answer intentionally does **not** depend on a specific SDK. The examples use the current documented Xero Accounting API 2.0 REST endpoints and standard HTTP behaviour, so the same logic can be implemented with Python `requests`, another HTTP client, or a current Xero SDK.
