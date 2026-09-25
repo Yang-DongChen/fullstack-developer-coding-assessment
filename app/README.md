@@ -202,3 +202,33 @@ Open the Vite URL shown in the terminal, normally `http://localhost:5173`.
 ## Notes
 
 The backend is intentionally small and framework-native. FastAPI provides automatic OpenAPI documentation, but this README documents the important request/response behaviour and error status codes required by the exercise.
+
+## Frontend requirements covered
+
+The React + TypeScript frontend includes:
+
+- loading and retryable product-load error states
+- incomplete selection and unavailable-combination states
+- live SKU resolution for price, image, and stock
+- quantity clamped to the selected SKU's current stock
+- out-of-stock state
+- add-to-cart progress, duplicate-click protection, success feedback, validation/stock/server error feedback
+- a post-mutation product refresh so UI stock reflects server state after add-to-cart
+- responsive layout for narrow mobile screens and desktop widths
+- semantic fieldsets/buttons, visible keyboard focus, and ARIA live feedback
+- separate API (`api.ts`), domain logic (`domain.ts`), and UI (`App.tsx`) concerns
+- frontend tests for variant resolution, option availability, duplicate-click behaviour, and retryable product loading
+
+Run frontend tests:
+
+```bash
+cd frontend
+npm install
+npm test
+```
+
+Build the frontend:
+
+```bash
+npm run build
+```
