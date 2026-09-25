@@ -44,34 +44,95 @@ stored connection
 
 ## C2 - Failure diagnosis
 
+If `/connections` succeeds but `/Invoices` returns an error, I would first check the HTTP status, response headers, token state, tenant selection, scopes, user permissions, and environment configuration.
+
+### 401 Unauthorized
+
+Check:
+
+1. Is the access token expired or invalid?
+2. Is the `Authorization: Bearer <access_token>` header correct?
+3. Was the refreshed token saved correctly?
+4. Is the token from the expected Xero application/environment?
+5. Does the response contain `WWW-Authenticate` with `error="insufficient_scope"`?
+
+For current Xero granular scopes, a missing required scope can be reported as `401` with an `insufficient_scope` indication, so the scope check should not assume that every scope problem is a `403`.
+
+For invoice access, check that the application was authorised with the required current granular invoice scope, such as `accounting.invoices`.
+
+Action:
+
+- Refresh the access token when it is expired.
+- If the token cannot be refreshed, stop the sync and require re-authorisation.
+- If the response indicates `insufficient_scope`, update the requested scopes and re-authorise.
+- Do not retry the same invalid request indefinitely.
+
+### 403 Forbidden
+
+Check:
+
+1. Does the Xero user have permission to access the organisation or requested data?
+2. Is the user authorised for the selected organisation?
+3. Are there organisation-level or user-level permission restrictions?
+
+Action:
+
+- Do not blindly retry.
+- Fix the permission or authorisation problem first.
+
+### 404 Not Found
+
+Check:
+
+1. Is the `xero-tenant-id` correct?
+2. Is the tenant still connected?
+3. Is the API endpoint correct?
+4. Is the request going to the correct environment/base URL?
+5. Does the requested resource actually exist?
+
+Action:
+
+- Stop the affected sync job.
+- Verify tenant selection and environment configuration.
+- Retry only after the underlying configuration or resource problem is understood.
+
+### Tenant and environment checks
+
+For each connected organisation, verify that the worker is using the correct values for:
+
 ```text
-GET /connections = 200
-        |
-        +--> GET /Invoices
-                |
-                +-- 401 Unauthorized
-                |     1. Check access-token expiry/validity.
-                |     2. Refresh the access token once.
-                |     3. Inspect `WWW-Authenticate` when present.
-                |     4. If it indicates `insufficient_scope`, check `accounting.invoices`.
-                |     5. If the problem remains, mark the connection for re-authorisation.
-                |
-                +-- 403 Forbidden
-                |     1. Check the Xero user's permission to access the organisation/data.
-                |     2. Compare user permissions between working and failing environments.
-                |     3. Do not keep retrying a persistent permission failure.
-                |
-                +-- 404 Not Found
-                      1. Check endpoint URL and API version.
-                      2. Check `xero-tenant-id` against the current `/connections` result.
-                      3. Check that the organisation is still connected.
-                      4. Compare environment variables/configuration.
-                      5. Do not blindly retry; fix the resource or configuration first.
+XERO_CLIENT_ID
+XERO_CLIENT_SECRET
+XERO_API_BASE_URL
+stored tenant_id
+stored access token / refresh token
+requested scopes
 ```
 
-For environment differences, I would compare the **client ID, client secret, redirect URI, requested scopes, stored tenant ID, API base URL, and connection data**. I would also verify that the test environment is connected to the intended Xero demo/test organisation.
+The tenant ID must come from the organisation selected through the Xero connection and must match the tenant stored for that internal organisation.
 
-Current Xero documentation distinguishes invalid authorisation (`401`), permission failures (`403`) and missing resources (`404`). Xero's current granular-scope guidance also says an endpoint called without the required granular scope can return `401` with `WWW-Authenticate: insufficient_scope`; therefore, scope diagnosis should not be limited to `403`.
+A useful diagnostic sequence is:
+
+```text
+/connections succeeds
+        |
+        v
+Check HTTP status from /Invoices
+        |
+        +---- 401
+        |      |
+        |      +--> expired/invalid token
+        |      |
+        |      +--> insufficient_scope
+        |
+        +---- 403
+        |      |
+        |      +--> user/organisation permission
+        |
+        +---- 404
+               |
+               +--> tenant ID / endpoint / environment / resource
+```
 
 ## C3 - Incremental synchronisation
 

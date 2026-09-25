@@ -1,17 +1,18 @@
 # Full-Stack Developer Coding Interview Assessment
 
-Candidate submission repository for the full-stack coding assessment.
+Candidate submission repository for the Aeris Health Full Stack coding assessment.
 
 ## Repository Structure
 
 ```text
 .
-├── A/                    # Task A: Python solution + automated tests
-├── B/                    # Task B: Python solution + automated tests
-├── C/                    # Task C: Xero integration review (Markdown answers)
-├── app/                  # Full-Stack App - Variant PDP
-│   ├── backend/          # Python 3.11+ / FastAPI API and backend tests
-│   └── frontend/         # React / TypeScript / Vite PDP and frontend tests
+├── A/                      # Task A - Python solution + tests
+├── B/                      # Task B - Python solution + tests
+├── C/                      # Task C - Xero integration review
+├── app/                    # Full-stack Variant PDP application
+│   ├── backend/            # FastAPI backend + API tests
+│   └── frontend/           # React + TypeScript frontend + tests
+├── .gitignore
 └── README.md
 ```
 
@@ -22,443 +23,242 @@ Candidate submission repository for the full-stack coding assessment.
 - npm
 - Git
 
-Tasks A and B use Python. Task C is a written Markdown review. The full-stack app uses FastAPI on the backend and React + TypeScript + Vite on the frontend.
-
-> The frontend uses Vite 7, which requires Node.js 20.19+ or 22.12+.
-
-## Quick Start
+## Setup and Testing
 
 ### Task A
 
-Task A uses Python's standard library for the solution. Pytest is used for automated tests.
+Run from the repository root:
 
 ```bash
-cd A
-python -m pip install pytest
-python -m pytest -v
+python -m pytest -v A/test_solution.py
 ```
+
+Task A is implemented in Python and includes validation, state transitions, idempotency, and tests for edge cases.
 
 ### Task B
 
-Task B uses Python's standard library for the solution. Pytest is used for automated tests.
+Run from the repository root:
 
 ```bash
-cd B
-python -m pip install pytest
-python -m pytest -v
+python -m pytest -v B/test_solution.py
 ```
+
+Task B uses dynamic programming with tie-breaking rules and includes tests for feasibility, minimum warehouse count, cost, lexicographic tie-breaking, and larger inputs.
 
 ### Task C
 
-Task C is a written Markdown review. No server is required.
+Task C is a Markdown-based written review covering:
 
-Open:
+- Xero OAuth and tenant verification
+- Authentication, scope, permission, and environment diagnosis
+- Resumable incremental invoice synchronisation
+- Rate limits and retry handling
+- Idempotency and data integrity
+- Observability and security
+
+The detailed answer is in:
 
 ```text
 C/README.md
 ```
 
-It covers:
+### Full-Stack App — Backend
 
-- OAuth and Xero tenant verification
-- diagnosis of 401 / 403 / 404 failures
-- resumable incremental invoice synchronisation
-- 429 handling, backoff and retry budgets
-- idempotency and data-integrity handling
-- observability and secret management
+The backend uses Python, FastAPI, and in-memory storage.
 
-Official Xero documentation links and SDK/API-version assumptions are included in `C/README.md`.
-
-## Full-Stack App - Variant PDP
-
-The app is a small product detail page backed by a FastAPI API.
-
-### Stack
-
-- Backend: Python 3.11+ / FastAPI / Uvicorn
-- Frontend: React / TypeScript / Vite
-- Storage: in-memory
-- Backend tests: pytest + FastAPI TestClient
-- Frontend tests: Vitest + React Testing Library
-
-### Backend setup
-
-Open a terminal:
+Install dependencies:
 
 ```bash
 cd app/backend
 python -m pip install -r requirements.txt
+```
+
+Run backend tests:
+
+```bash
 python -m pytest -v
+```
+
+Start the API:
+
+```bash
 python -m uvicorn app:app --reload --port 8000
 ```
 
-The backend API is available at:
-
-```text
-http://127.0.0.1:8000
-```
-
-FastAPI OpenAPI documentation:
+The FastAPI OpenAPI documentation is available at:
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
-Keep this terminal running while using the frontend.
+### Full-Stack App — Frontend
 
-### Frontend setup
+The frontend uses React, TypeScript, and Vite.
 
-Open a second terminal:
+Install dependencies:
 
 ```bash
 cd app/frontend
 npm install
+```
+
+Run frontend tests:
+
+```bash
 npm test
-npm run build
+```
+
+Start the development server:
+
+```bash
 npm run dev
 ```
 
-Open the Vite URL shown in the terminal, normally:
+The frontend will normally be available at:
 
 ```text
 http://localhost:5173
 ```
 
-### API contract
+Build the frontend:
 
-The app exposes three required endpoints:
-
-#### GET `/api/products/{id}`
-
-Returns the seeded product, option dimensions and current SKU data.
-
-Example:
-
-```http
-GET /api/products/pdp-001
+```bash
+npm run build
 ```
 
-Successful response:
+## Application Overview
 
-```json
-{
-  "id": "pdp-001",
-  "name": "Everyday Cotton Tee",
-  "description": "A simple everyday T-shirt with multiple colour and size variants.",
-  "options": [
-    {"name": "colour", "values": ["Black", "White"]},
-    {"name": "size", "values": ["S", "M", "L", "XL"]}
-  ],
-  "skus": [
-    {
-      "id": "tee-black-s",
-      "price": 2999,
-      "available_quantity": 10,
-      "image": "https://placehold.co/800x800?text=Black+S",
-      "options": {"colour": "Black", "size": "S"}
-    }
-  ]
-}
-```
+The Full-Stack App is a small Variant Product Detail Page (PDP) backed by a FastAPI API.
 
-Status codes:
+It demonstrates:
 
-- `200` product returned successfully
-- `404` product does not exist
+- Product and SKU selection
+- Two option dimensions
+- Server-side SKU, price, and stock validation
+- Add-to-cart functionality
+- Idempotency protection
+- Concurrency protection against overselling
+- Resilient frontend state handling
+- Accessible controls and feedback
+- Automated backend and frontend tests
 
-#### POST `/api/cart/items`
+## Architecture Notes
 
-Adds a SKU and quantity to the current in-memory cart. The server validates the SKU, quantity and current stock and uses server-side price/stock data.
+### Backend
 
-Required header:
+The backend keeps product, SKU, cart, and idempotency data in memory.
 
-```http
-Idempotency-Key: unique-logical-request-id
-```
+The add-to-cart operation validates the SKU and current stock on the server. Price and stock values from the client are never trusted.
 
-Request body:
+A process-level lock protects the critical stock check-and-decrement operation so two concurrent requests cannot both reserve the same final unit within the same process.
 
-```json
-{
-  "sku_id": "tee-black-s",
-  "quantity": 2
-}
-```
+Idempotency records are stored by idempotency key and request fingerprint. Repeating the same request key with the same payload replays the previous result instead of adding the item again.
 
-Successful response:
+### Frontend
 
-```json
-{
-  "message": "Item added to cart.",
-  "cart": {
-    "items": [
-      {
-        "sku_id": "tee-black-s",
-        "quantity": 2,
-        "price": 2999,
-        "line_total": 5998
-      }
-    ],
-    "total_item_count": 2,
-    "total_price": 5998
-  }
-}
-```
-
-Status codes:
-
-- `201` item added successfully
-- `400` missing idempotency key
-- `404` SKU does not exist
-- `409` insufficient stock
-- `409` idempotency key reused with a different request
-- `422` request validation failed
-- `500` unexpected server error
-
-The client cannot override the product price or stock. The server always uses its own SKU data.
-
-#### GET `/api/cart`
-
-Returns the current cart and total item count.
-
-```http
-GET /api/cart
-```
-
-Example response:
-
-```json
-{
-  "items": [
-    {
-      "sku_id": "tee-black-s",
-      "quantity": 2,
-      "price": 2999,
-      "line_total": 5998
-    }
-  ],
-  "total_item_count": 2,
-  "total_price": 5998
-}
-```
-
-### Structured errors
-
-Errors use a consistent shape:
-
-```json
-{
-  "error": {
-    "code": "INSUFFICIENT_STOCK",
-    "message": "Only 1 unit(s) are currently available.",
-    "details": {
-      "available_quantity": 1
-    }
-  }
-}
-```
-
-Unexpected internal exception details are not returned to the browser.
-
-## Full-Stack App design notes
-
-### Product and SKU model
-
-The seeded product has two option dimensions:
-
-- Colour: Black, White
-- Size: S, M, L, XL
-
-There are 7 SKUs covering 7 of the 8 possible combinations.
-
-- `White + XL` is intentionally unavailable.
-- `Black + L` exists but starts out of stock.
-
-Each SKU has its own ID, price, available quantity, image and option values.
-
-### Frontend state handling
-
-The frontend keeps selection state separate from server data and resolves the selected SKU from the complete option selection.
-
-When the selected options change, the UI updates the corresponding:
-
-- price
-- product image
-- stock status
-- available quantity
-- quantity control bounds
-
-Impossible combinations are disabled instead of allowing the user to select a SKU that does not exist.
-
-Quantity is clamped to the selected SKU's current available stock, including when the selected variant changes.
-
-### Async and failure handling
-
-The frontend explicitly handles:
-
-- initial product loading
-- retryable product-load failure
-- incomplete variant selection
-- invalid/unavailable combinations
-- out-of-stock SKU
-- add-to-cart in progress
-- successful add-to-cart
-- client/server validation failures
-- insufficient stock
-- unexpected server errors
-
-After a successful cart mutation, the frontend refreshes product data so displayed stock is re-read from the server instead of relying on stale client state.
-
-### Accessibility
-
-The frontend uses semantic controls such as buttons and fieldsets, visible keyboard focus styles, labels, disabled states and ARIA live feedback for async success/error messages.
-
-The layout is responsive for approximately 375 px mobile width and 1280 px desktop width.
-
-### Separation of concerns
+The frontend separates concerns into:
 
 ```text
-frontend/src/
-├── api.ts       # HTTP/API calls and API error handling
-├── domain.ts    # SKU and variant-resolution logic
-├── App.tsx      # React UI and interaction state
-└── styles.css   # responsive presentation
+src/api.ts       # API calls and HTTP error handling
+src/domain.ts    # SKU and variant resolution logic
+src/App.tsx      # UI state and interactions
+src/App.test.tsx # frontend tests
 ```
 
-This keeps API calls, SKU business logic and rendering concerns separate.
+The UI re-fetches product and cart state after add-to-cart so it can recover from newer server-side stock values.
 
-## Concurrency and idempotency
+## Assumptions
 
-The backend uses a single in-process `threading.Lock` around the inventory check, stock decrement, cart update and idempotency record.
+- The product catalogue contains one seeded product with multiple SKUs.
+- Each SKU has its own ID, price, image, stock quantity, and option values.
+- The backend uses in-memory storage because persistent storage is not required by the assessment.
+- The cart represents the current application session and is not tied to authentication.
+- The backend and frontend run as separate development processes.
+- The Xero review in Task C is SDK-independent and assumes the current Xero Accounting API and OAuth documentation.
 
-The critical section is:
+## Known Limitations
 
-```text
-check current stock
-    -> reject if insufficient
-    -> decrement stock
-    -> update cart
-    -> save idempotency result
-```
+- Backend state is in memory and is lost when the process restarts.
+- The stock lock protects concurrency only inside one Python process. A multi-process or distributed deployment would require database transactions or another shared concurrency mechanism.
+- The frontend is intentionally focused on the assessment scope. Authentication, checkout, payment processing, and deployment are out of scope.
+- The application is a small assessment project rather than a complete production commerce system.
 
-Therefore, two concurrent requests attempting to reserve the final unit cannot both succeed in the same Python process. One succeeds and the other receives `409 INSUFFICIENT_STOCK`.
-
-For a multi-process production deployment, this lock would not be sufficient because processes do not share memory. A production system should use shared transactional storage and an atomic inventory update or row-level locking.
-
-Repeated requests with the same `Idempotency-Key` and identical payload return the original result without changing stock again. Reusing the same key with different data is rejected with `409`.
-
-## Automated tests
+## Testing
 
 ### Task A
 
 ```bash
-cd A
-python -m pytest -v
+python -m pytest -v A/test_solution.py
 ```
 
 ### Task B
 
 ```bash
-cd B
-python -m pytest -v
+python -m pytest -v B/test_solution.py
 ```
 
-### Full-stack backend
+### Backend
 
 ```bash
 cd app/backend
 python -m pytest -v
 ```
 
-The backend tests cover success, validation, idempotency and the concurrent final-unit stock race.
-
-### Full-stack frontend
+### Frontend
 
 ```bash
 cd app/frontend
 npm test
-```
-
-Frontend tests include meaningful cases for:
-
-- variant resolution
-- unavailable variant handling
-- duplicate-click protection for Add to Cart
-- product-load retry behaviour
-
-### Production build check
-
-```bash
-cd app/frontend
 npm run build
 ```
 
-## Architecture / engineering trade-offs
-
-The assessment intentionally uses in-memory storage to keep the implementation small and focused on API correctness, state management and concurrency behaviour.
-
-Trade-offs and limitations:
-
-- Restarting the backend resets product stock, cart contents and idempotency state.
-- The `threading.Lock` protects one Python process only.
-- There is no authentication, checkout, payment processing or production deployment because those are outside the scope of the exercise.
-- Remote placeholder images are used to keep the repository small and avoid committing binary assets.
-- The frontend refreshes product data after a successful cart mutation instead of using a fully optimistic inventory update. This favours correctness and avoids rollback complexity for the required flow.
-
-## Task-specific assumptions
-
-- Task A and Task B are evaluated from their own implementations and tests under `A/` and `B/`.
-- Task C uses the current Xero Accounting API documentation and documents its OAuth, tenant, granular-scope, retry, synchronisation and security decisions in `C/README.md`.
-- The Variant PDP uses one seeded product and an in-memory cart because persistent accounts and checkout are explicitly out of scope.
+The repository includes automated tests for core state transitions, validation, idempotency, SKU resolution, duplicate-click protection, and the backend stock race.
 
 ## AI Tool Disclosure
 
-AI-assisted tools were used as development support during the assessment. They were used to help interpret task requirements, draft and review some boilerplate code, identify edge cases, suggest tests and improve documentation.
+AI-assisted tools were used as development support during this assessment.
 
-The submitted implementation was reviewed and adjusted for the assessment requirements. The candidate should be able to explain the main design decisions, including server-side stock and price validation, idempotency handling, the in-process concurrency lock, Task C synchronisation decisions, and frontend SKU/async state handling.
+AI assistance was used for areas including:
 
-## Security / repository hygiene
+- Explaining assessment requirements
+- Drafting and refining implementation ideas
+- Generating and reviewing code
+- Helping create test cases
+- Reviewing documentation and edge cases
 
-No credentials, access tokens or secrets should be committed to this repository.
+The submitted implementation was reviewed and tested by the candidate. The candidate is prepared to explain the submitted design choices, debug issues, and make small changes during a follow-up discussion.
 
-Before final submission, verify the repository contents:
+## Security
 
-```bash
-git status
-git ls-files
-```
+No credentials, access tokens, refresh tokens, client secrets, or other secrets should be committed to the repository.
 
-A useful local check for common secrets is:
+Sensitive configuration should be provided through environment variables or a secret-management system in a real deployment.
 
-```bash
-git grep -n -E "access_token|refresh_token|client_secret|BEGIN PRIVATE KEY" || true
-```
+## Dependencies
 
-Environment-specific secrets should be provided through environment variables or a secret manager rather than source code. The included `.gitignore` keeps local environment files and generated dependencies out of Git.
+### Backend
 
-## Final submission checklist
+- FastAPI
+- Uvicorn
+- Pydantic
+- Pytest
+- HTTPX
 
-- [ ] Repository is pushed to the expected GitHub branch.
-- [ ] A tests pass.
-- [ ] B tests pass.
-- [ ] C answers and official Xero documentation links are present.
-- [ ] Backend tests pass.
-- [ ] Frontend tests pass.
-- [ ] Frontend production build passes.
-- [ ] Backend starts from the documented command.
-- [ ] Frontend starts from the documented command.
-- [ ] The full-stack app works from seeded data without authentication or external accounts.
-- [ ] No credentials, access tokens or personal data are committed.
-- [ ] AI assistance is disclosed.
-- [ ] Main implementation decisions and limitations are documented and explainable.
+### Frontend
 
-## Submission
+- React
+- React DOM
+- TypeScript
+- Vite
+- Vitest
+- @vitejs/plugin-react
 
-After final local verification:
+## Submission Checklist
 
-```bash
-git status
-git add A B C app README.md
-git commit -m "Complete full-stack coding assessment"
-git push
-```
+- [x] Repository contains Tasks A, B, C, and the Full-Stack App
+- [x] Setup commands are documented
+- [x] Backend and frontend test commands are documented
+- [x] Assumptions and limitations are documented
+- [x] AI assistance is disclosed
+- [x] No credentials or tokens are committed
+- [x] Repository is ready for reviewer access
